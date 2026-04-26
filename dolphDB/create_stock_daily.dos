@@ -1,0 +1,19 @@
+login(`admin, `123456)
+
+// 1. 获取已存在的数据库句柄（不创建新库）
+db_daily = database("dfs://ohlcv_daily")
+
+// 2. 定义日线表结构
+sch_daily = table(
+    1:0,
+    `code`name`trade_date`open`high`low`close`volume`amount`adjust_factor,
+    [`SYMBOL, `STRING, `DATE, `DOUBLE, `DOUBLE, `DOUBLE, `DOUBLE, `INT, `DOUBLE, `DOUBLE]
+)
+
+// 3. 检查表是否已存在，如果不存在则创建
+if(!existsTable("dfs://ohlcv_daily", "stock_kline_daily")) {
+    db_daily.createPartitionedTable(sch_daily, "stock_kline_daily", `trade_date)
+    print("表 stock_kline_daily 创建成功")
+} else {
+    print("表 stock_kline_daily 已存在")
+}
