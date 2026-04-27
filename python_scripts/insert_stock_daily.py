@@ -30,8 +30,8 @@ INTRADAY_BATCH_RPM = int(os.getenv("INTRADAY_BATCH_RPM", 30))
 INTRADAY_BATCH_INTERVAL_SEC = 60.0 / max(1, INTRADAY_BATCH_RPM)
 
 # 时间范围（可手动调整）
-START_DATE = datetime(2010, 1, 1)    # 从 2010 年开始
-END_DATE = datetime(2020, 1, 1)            # 到今天为止
+START_DATE = datetime(2020, 1, 1)    # 从 2020 年开始
+END_DATE = datetime.now()          # 到今天为止
 
 # DolphinDB 连接信息
 DDB_HOST = os.getenv("DOLPHINDB_HOST", "localhost")

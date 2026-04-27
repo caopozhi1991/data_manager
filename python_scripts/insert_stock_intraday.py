@@ -206,6 +206,19 @@ def write_intraday_to_dolphindb(period_df: pd.DataFrame, period: str, ddb_sessio
     return len(write_df)
 
 
+def get_intraday_table_row_count(ddb_session, period: str) -> int:
+    """返回分钟线表当前总行数（数据库侧 count(*)）。"""
+    table_name = _intraday_table_name(period)
+    ddb_session.upload({"dbPath": DDB_DB_PATH, "tableName": table_name})
+    exists = ddb_session.run("existsTable(dbPath, tableName)")
+    if not exists:
+        return 0
+    cnt = ddb_session.run("exec count(*) from loadTable(dbPath, tableName)")
+    if isinstance(cnt, (int, float)):
+        return int(cnt)
+    return int(cnt) if cnt is not None else 0
+
+
 def main() -> None:
     ddb_session = connect_dolphindb_session()
 
@@ -278,7 +291,16 @@ def main() -> None:
 
     print("入库完成")
     for period in periods:
-        print(f"{period}: 拉取总行数={period_total_rows[period]}, 写入总行数={period_total_written[period]}")
+        db_count = -1
+        try:
+            db_count = get_intraday_table_row_count(ddb_session, period)
+        except Exception as e:
+            print(f"{period}: 数据库计数失败: {e}")
+        print(
+            f"{period}: 拉取总行数={period_total_rows[period]}, "
+            f"写入总行数={period_total_written[period]}, "
+            f"数据库总行数={db_count}"
+        )
 
     try:
         ddb_session.close()
