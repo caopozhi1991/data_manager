@@ -13,7 +13,6 @@ import pandas as pd
 from insert_stock_daily import (
     BATCH_INTERVAL_SEC,
     BATCH_SIZE,
-    DDB_DB_PATH,
     connect_dolphindb_session,
     get_ex_factors_batch,
     get_all_stock_symbols,
@@ -26,6 +25,7 @@ INTRADAY_START = os.getenv("INTRADAY_START", (datetime.now() - timedelta(days=36
 INTRADAY_END = os.getenv("INTRADAY_END", datetime.now().strftime("%Y-%m-%d"))
 INTRADAY_PERIODS = os.getenv("INTRADAY_PERIODS", "1m,5m,15m,30m,60m")
 INTRADAY_SYMBOL_LIMIT = int(os.getenv("INTRADAY_SYMBOL_LIMIT", "0"))
+INTRADAY_DDB_DB_PATH = os.getenv("INTRADAY_DDB_DB_PATH", "dfs://ohlcv_minute")
 INTRADAY_DDB_TABLE_PREFIX = os.getenv("INTRADAY_DDB_TABLE_PREFIX", "stock_kline")
 LOCAL_TIMEZONE = "Asia/Shanghai"
 
@@ -177,7 +177,7 @@ def ensure_intraday_table(ddb_session, period: str) -> None:
     """确保分钟线表存在（每个周期一张表）。"""
     table_name = _intraday_table_name(period)
     create_script = f"""
-        dbPath = "{DDB_DB_PATH}"
+        dbPath = "{INTRADAY_DDB_DB_PATH}"
         tableName = "{table_name}"
         db = database(dbPath)
         if(not existsTable(dbPath, tableName)){{
@@ -196,7 +196,7 @@ def write_intraday_to_dolphindb(period_df: pd.DataFrame, period: str, ddb_sessio
         return 0
 
     table_name = _intraday_table_name(period)
-    ddb_session.upload({"dfTable": write_df, "dbPath": DDB_DB_PATH, "tableName": table_name})
+    ddb_session.upload({"dfTable": write_df, "dbPath": INTRADAY_DDB_DB_PATH, "tableName": table_name})
     res = ddb_session.run("""
         pt = loadTable(dbPath, tableName)
         pt.tableInsert(dfTable)
@@ -209,7 +209,7 @@ def write_intraday_to_dolphindb(period_df: pd.DataFrame, period: str, ddb_sessio
 def get_intraday_table_row_count(ddb_session, period: str) -> int:
     """返回分钟线表当前总行数（数据库侧 count(*)）。"""
     table_name = _intraday_table_name(period)
-    ddb_session.upload({"dbPath": DDB_DB_PATH, "tableName": table_name})
+    ddb_session.upload({"dbPath": INTRADAY_DDB_DB_PATH, "tableName": table_name})
     exists = ddb_session.run("existsTable(dbPath, tableName)")
     if not exists:
         return 0

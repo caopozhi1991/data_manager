@@ -8,7 +8,7 @@
 """
 
 import argparse
-from typing import List
+from typing import Dict, List, Tuple
 
 from insert_stock_daily import connect_dolphindb_session
 
@@ -21,6 +21,27 @@ TABLES = [
     "stock_kline_30m",
     "stock_kline_60m",
 ]
+
+
+def _parse_tables_arg(table_args: List[str]) -> List[str]:
+    if not table_args:
+        return TABLES
+
+    selected: List[str] = []
+    for raw in table_args:
+        for item in raw.split(","):
+            table_name = item.strip()
+            if not table_name:
+                continue
+            if table_name not in TABLES:
+                raise ValueError(f"不支持的表名: {table_name}，可选值: {', '.join(TABLES)}")
+            if table_name not in selected:
+                selected.append(table_name)
+
+    if not selected:
+        raise ValueError("--tables 不能为空")
+
+    return selected
 
 
 def _ensure_target_db(session, src_db_path: str, dst_db_path: str) -> None:
@@ -95,17 +116,73 @@ def _count_rows(session, db_path: str, table_name: str) -> int:
     return int(cnt)
 
 
-def _insert_all_rows(session, src_db_path: str, dst_db_path: str, table_name: str) -> int:
-    session.upload({"srcDbPath": src_db_path, "dstDbPath": dst_db_path, "tableName": table_name})
+def _get_trade_date_counts(session, db_path: str, table_name: str) -> List[Tuple[object, int]]:
+    session.upload({"dbPath": db_path, "tableName": table_name})
+    result = session.run(
+        "select trade_date, count(*) as cnt from loadTable(dbPath, tableName) group by trade_date order by trade_date"
+    )
+    if result is None or len(result) == 0:
+        return []
+    return [(row.trade_date, int(row.cnt)) for row in result.itertuples(index=False)]
+
+
+def _insert_trade_date_rows(session, src_db_path: str, dst_db_path: str, table_name: str, trade_date: object) -> int:
+    session.upload(
+        {
+            "srcDbPath": src_db_path,
+            "dstDbPath": dst_db_path,
+            "tableName": table_name,
+            "tradeDate": trade_date,
+        }
+    )
     inserted = session.run(
         """
         src = loadTable(srcDbPath, tableName)
         dst = loadTable(dstDbPath, tableName)
-        allRows = select * from src
-        dst.tableInsert(allRows)
+        batchRows = select * from src where trade_date = tradeDate
+        dst.tableInsert(batchRows)
         """
     )
     return int(inserted)
+
+
+def _sync_rows_by_trade_date(session, src_db_path: str, dst_db_path: str, table_name: str) -> int:
+    src_counts = _get_trade_date_counts(session, src_db_path, table_name)
+    dst_counts: Dict[object, int] = dict(_get_trade_date_counts(session, dst_db_path, table_name))
+
+    total_inserted = 0
+    for trade_date, src_count in src_counts:
+        dst_count = dst_counts.get(trade_date, 0)
+        if dst_count == src_count:
+            continue
+        if dst_count != 0:
+            raise RuntimeError(
+                f"目标表已存在部分数据，请先清理后重试: {trade_date}, src={src_count}, dst={dst_count}"
+            )
+
+        inserted = _insert_trade_date_rows(session, src_db_path, dst_db_path, table_name, trade_date)
+        if inserted != src_count:
+            raise RuntimeError(
+                f"按交易日迁移后行数不一致: {trade_date}, expected={src_count}, actual={inserted}"
+            )
+
+        total_inserted += inserted
+
+    return total_inserted
+
+
+def _find_trade_date_mismatches(session, src_db_path: str, dst_db_path: str, table_name: str) -> List[str]:
+    src_counts = dict(_get_trade_date_counts(session, src_db_path, table_name))
+    dst_counts = dict(_get_trade_date_counts(session, dst_db_path, table_name))
+
+    mismatches: List[str] = []
+    all_dates = sorted(set(src_counts) | set(dst_counts), key=str)
+    for trade_date in all_dates:
+        src_count = src_counts.get(trade_date, 0)
+        dst_count = dst_counts.get(trade_date, 0)
+        if src_count != dst_count:
+            mismatches.append(f"{trade_date}: src={src_count}, dst={dst_count}")
+    return mismatches
 
 
 def _drop_source_table(session, src_db_path: str, table_name: str) -> None:
@@ -143,7 +220,7 @@ def migrate_tables(execute: bool, tables: List[str]) -> None:
                 print("DRY-RUN: 不执行写入/删除")
                 continue
 
-            inserted = _insert_all_rows(session, SRC_DB_PATH, DST_DB_PATH, table_name)
+            inserted = _sync_rows_by_trade_date(session, SRC_DB_PATH, DST_DB_PATH, table_name)
             src_after_insert = _count_rows(session, SRC_DB_PATH, table_name)
             dst_after_insert = _count_rows(session, DST_DB_PATH, table_name)
             print(
@@ -151,11 +228,17 @@ def migrate_tables(execute: bool, tables: List[str]) -> None:
                 f"写入后 源={src_after_insert}, 目标={dst_after_insert}"
             )
 
-            expected_dst_after = dst_before + src_before
+            expected_dst_after = src_after_insert
             if dst_after_insert != expected_dst_after:
                 raise RuntimeError(
                     f"校验失败: {table_name} 目标行数不符合预期, "
                     f"期望={expected_dst_after}, 实际={dst_after_insert}"
+                )
+
+            mismatches = _find_trade_date_mismatches(session, SRC_DB_PATH, DST_DB_PATH, table_name)
+            if mismatches:
+                raise RuntimeError(
+                    f"校验失败: {table_name} 存在交易日级别差异: {'; '.join(mismatches[:5])}"
                 )
 
             _drop_source_table(session, SRC_DB_PATH, table_name)
@@ -179,9 +262,14 @@ def migrate_tables(execute: bool, tables: List[str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="迁移分钟表 ohlcv_daily -> ohlcv_minute")
     parser.add_argument("--execute", action="store_true", help="执行真实迁移与删除（默认仅 dry-run）")
+    parser.add_argument(
+        "--tables",
+        nargs="+",
+        help="指定要迁移的表名，支持空格分隔或逗号分隔；默认迁移全部分钟表",
+    )
     args = parser.parse_args()
 
-    migrate_tables(execute=args.execute, tables=TABLES)
+    migrate_tables(execute=args.execute, tables=_parse_tables_arg(args.tables or []))
 
 
 if __name__ == "__main__":
