@@ -25,7 +25,7 @@ from insert_stock_daily import (
 INTRADAY_START = os.getenv("INTRADAY_START", (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d"))
 INTRADAY_END = os.getenv("INTRADAY_END", datetime.now().strftime("%Y-%m-%d"))
 INTRADAY_PERIODS = os.getenv("INTRADAY_PERIODS", "1m,5m,15m,30m,60m")
-INTRADAY_SYMBOL_LIMIT = int(os.getenv("INTRADAY_SYMBOL_LIMIT", "50"))
+INTRADAY_SYMBOL_LIMIT = int(os.getenv("INTRADAY_SYMBOL_LIMIT", "0"))
 INTRADAY_DDB_TABLE_PREFIX = os.getenv("INTRADAY_DDB_TABLE_PREFIX", "stock_kline")
 LOCAL_TIMEZONE = "Asia/Shanghai"
 

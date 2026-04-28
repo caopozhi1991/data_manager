@@ -1,0 +1,5 @@
+truncate("dfs://ohlcv_minute", "stock_kline_15m")
+truncate("dfs://ohlcv_minute", "stock_kline_1m")
+truncate("dfs://ohlcv_minute", "stock_kline_30m")
+truncate("dfs://ohlcv_minute", "stock_kline_5m")
+truncate("dfs://ohlcv_minute", "stock_kline_60m")

@@ -20,7 +20,7 @@ load_dotenv()
 
 # ==================== 常量与配置 ====================
 # tickflow 批量查询限制
-BATCH_SIZE = 100          # 每批最多 100 个标的
+BATCH_SIZE = 10         # 每批最多 100 个标的
 RPM = 60                  # 60 次/分钟
 BATCH_INTERVAL_SEC = 60.0 / RPM   # 1 秒（RPM=60 时）
 DAY_MS = 86400000
