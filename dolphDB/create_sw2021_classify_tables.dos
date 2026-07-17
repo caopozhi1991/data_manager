@@ -1,0 +1,26 @@
+login(`admin, `123456)
+
+dbPath = "dfs://market_data"
+
+// 若库不存在则创建；使用单分区 VALUE 库承载静态维表
+if(!existsDatabase(dbPath)) {
+    db = database(dbPath, VALUE, 1..1, , "OLAP")
+} else {
+    db = database(dbPath)
+}
+
+schema = table(
+    1:0,
+    `index_code`industry_name`level`industry_code`is_pub`parent_code`src,
+    [`SYMBOL, `STRING, `STRING, `INT, `INT, `INT, `STRING]
+)
+
+tableNames = ["sw2021_index_classify_l1", "sw2021_index_classify_l2", "sw2021_index_classify_l3"]
+
+for(tn in tableNames) {
+    if(existsTable(dbPath, tn)) {
+        dropTable(dbPath, tn)
+    }
+    db.createTable(schema, tn)
+    print("表 " + tn + " 创建成功")
+}

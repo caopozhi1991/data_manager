@@ -1,0 +1,3 @@
+db = database("dfs://vnpy_bar_db")
+dropTable(db, "tick")
+dropTable(db, "tickoverview")

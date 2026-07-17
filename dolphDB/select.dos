@@ -1,0 +1,5 @@
+// 1. 加载分布式表到变量 pt
+pt = loadTable(database="dfs://market_data", tableName="futures_kline_daily_hfq")
+
+// 2. 再对变量 pt 执行查询
+select * from pt where code = "BU88.SHFE"

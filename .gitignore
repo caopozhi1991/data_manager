@@ -1,2 +1,4 @@
 __pycache__/
 *.ipynb
+/minute_data/
+/tushare_data/

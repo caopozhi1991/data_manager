@@ -1,6 +1,1 @@
-db = database("dfs://ohlcv_daily")
-db.dropTable("stock_kline_15m")
-db.dropTable("stock_kline_1m")
-db.dropTable("stock_kline_30m")
-db.dropTable("stock_kline_60m")
-db.dropTable("stock_kline_5m")
+dropDatabase("dfs://quanta_factors")
