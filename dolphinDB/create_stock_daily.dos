@@ -1,7 +1,7 @@
 login(`admin, `123456)
 
 // 1. 获取已存在的数据库句柄（不创建新库）
-db_daily = database("dfs://ohlcv_daily")
+db_daily = database("dfs://market_data")
 
 // 2. 定义日线表结构
 sch_daily = table(
@@ -11,7 +11,7 @@ sch_daily = table(
 )
 
 // 3. 检查表是否已存在，如果不存在则创建
-if(!existsTable("dfs://ohlcv_daily", "stock_kline_daily")) {
+if(!existsTable("dfs://market_data", "stock_kline_daily")) {
     db_daily.createPartitionedTable(sch_daily, "stock_kline_daily", `trade_date)
     print("表 stock_kline_daily 创建成功")
 } else {

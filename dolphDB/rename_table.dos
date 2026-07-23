@@ -1,5 +1,0 @@
-// 1. 获取数据库句柄
-db = database("dfs://vnpy_bar_db")
-
-// 2. 重命名表
-renameTable(db, "bar", "vnpy_stock_daily_qfq")
