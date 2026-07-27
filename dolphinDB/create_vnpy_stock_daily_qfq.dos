@@ -1,0 +1,23 @@
+login(`admin, `123456)
+
+dbPath = "dfs://vnpy_bar_db"
+tableName = "vnpy_stock_daily_qfq"
+
+if(!existsDatabase(dbPath)) {
+    throw "数据库不存在，请先执行 create_vnpy_bar_db.dos"
+}
+
+db = database(dbPath)
+
+schema = table(
+    1:0,
+    `symbol`exchange`datetime`interval`volume`turnover`open_interest`open_price`high_price`low_price`close_price,
+    [`SYMBOL, `SYMBOL, `DATE, `SYMBOL, `DOUBLE, `DOUBLE, `DOUBLE, `DOUBLE, `DOUBLE, `DOUBLE, `DOUBLE]
+)
+
+if(!existsTable(dbPath, tableName)) {
+    db.createPartitionedTable(schema, tableName, `datetime)
+    print("表 " + tableName + " 创建成功")
+} else {
+    print("表 " + tableName + " 已存在")
+}
