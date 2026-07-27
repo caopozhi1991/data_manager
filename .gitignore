@@ -3,3 +3,4 @@ __pycache__/
 /minute_data/
 /tushare_data/
 /data/
+market_data.db
