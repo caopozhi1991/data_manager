@@ -1,7 +1,7 @@
 login(`admin, `123456)
 
 dbPath = "dfs://vnpy_bar_db"
-tableName = "vnpy_stock_daily_qfq"
+tableName = "vnpy_stock_daily_hfq"
 
 if(!existsDatabase(dbPath)) {
     throw "数据库不存在，请先执行 create_vnpy_bar_db.dos"
