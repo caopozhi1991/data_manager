@@ -16,7 +16,7 @@ schema = table(
 )
 
 if(!existsTable(dbPath, tableName)) {
-    db.createPartitionedTable(schema, tableName, `datetime, {}, `datetime)
+    db.createPartitionedTable(schema, tableName, `datetime)
     print("表 " + tableName + " 创建成功")
 } else {
     print("表 " + tableName + " 已存在")

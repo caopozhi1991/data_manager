@@ -2,12 +2,21 @@ login(`admin, `123456)
 
 dbPath = "dfs://vnpy_bar_db"
 
-// 按日历年做 RANGE 分区，覆盖 2020-2030（左闭右开）
 partitionBounds = [2020.01.01, 2021.01.01, 2022.01.01, 2023.01.01, 2024.01.01, 2025.01.01, 2026.01.01, 2027.01.01, 2028.01.01, 2029.01.01, 2030.01.01, 2031.01.01]
 
 if(!existsDatabase(dbPath)) {
-    database(dbPath, RANGE, partitionBounds, , "OLAP")
-    print("数据库 " + dbPath + " 创建成功")
+    // 使用 TSDB 引擎
+    db = database(dbPath, RANGE, partitionBounds, , "TSDB")
+    
+    schema = table(1:0, 
+        ["datetime", "symbol", "open", "high", "low", "close", "volume", "turnover"],
+        [DATETIME, SYMBOL, DOUBLE, DOUBLE, DOUBLE, DOUBLE, LONG, DOUBLE]
+    )
+    
+    // TSDB 必须指定 sortColumns，且第一个字段建议为时间字段
+    createPartitionedTable(db, schema, "bar_data", "datetime", , ["symbol", "datetime"])
+    
+    print("数据库和表创建成功")
 } else {
     print("数据库 " + dbPath + " 已存在")
 }
