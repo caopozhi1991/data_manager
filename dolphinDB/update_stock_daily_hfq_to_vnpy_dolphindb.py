@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,12 @@ def parse_date_arg(raw: str) -> date:
     return datetime.strptime(raw, "%Y-%m-%d").date()
 
 
+def validate_identifier(name: str, field_name: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"Invalid {field_name}: {name}")
+    return name
+
+
 def connect_dolphindb_session():
     import dolphindb as ddb
 
@@ -87,8 +94,9 @@ def ensure_table_exists(session, db_path: str, table_name: str) -> None:
 
 
 def get_table_max_date(session, db_path: str, table_name: str, column_name: str = "trade_date") -> date | None:
-    session.upload({"dbPath": db_path, "tableName": table_name, "columnName": column_name})
-    value = session.run("exec max(columnName) from loadTable(dbPath, tableName)")
+    safe_column = validate_identifier(column_name, "column name")
+    session.upload({"dbPath": db_path, "tableName": table_name})
+    value = session.run(f"exec max({safe_column}) from loadTable(dbPath, tableName)")
     if value is None:
         return None
 
@@ -99,8 +107,9 @@ def get_table_max_date(session, db_path: str, table_name: str, column_name: str 
 
 
 def get_table_min_date(session, db_path: str, table_name: str, column_name: str = "trade_date") -> date | None:
-    session.upload({"dbPath": db_path, "tableName": table_name, "columnName": column_name})
-    value = session.run("exec min(columnName) from loadTable(dbPath, tableName)")
+    safe_column = validate_identifier(column_name, "column name")
+    session.upload({"dbPath": db_path, "tableName": table_name})
+    value = session.run(f"exec min({safe_column}) from loadTable(dbPath, tableName)")
     if value is None:
         return None
 
@@ -190,10 +199,16 @@ def rebuild_vnpy_hfq_range(
             """
             src = loadTable(srcDbPath, srcTable)
             rows = select
-                code as symbol,
-                iif(code like "6%", "SSE", iif(code like "0%" or code like "3%", "SZSE", "UNKNOWN")) as exchange,
+                iif(strlen(code) >= 6, substr(code, 0, 6), code) as symbol,
+                iif(upper(code) like "%.SH", "SSE",
+                    iif(upper(code) like "%.SZ", "SZSE",
+                        iif(upper(code) like "%.BJ", "BSE",
+                            iif(code like "6%", "SSE", iif(code like "0%" or code like "3%", "SZSE", "UNKNOWN"))
+                        )
+                    )
+                ) as exchange,
                 trade_date as datetime,
-                "1d" as interval,
+                "d" as interval,
                 volume,
                 0.0 as turnover,
                 0.0 as open_interest,
