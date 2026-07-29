@@ -6,16 +6,7 @@ partitionBounds = [2020.01.01, 2021.01.01, 2022.01.01, 2023.01.01, 2024.01.01, 2
 
 if(!existsDatabase(dbPath)) {
     // 使用 TSDB 引擎
-    db = database(dbPath, RANGE, partitionBounds, , "TSDB")
-    
-    schema = table(1:0, 
-        ["datetime", "symbol", "open", "high", "low", "close", "volume", "turnover"],
-        [DATETIME, SYMBOL, DOUBLE, DOUBLE, DOUBLE, DOUBLE, LONG, DOUBLE]
-    )
-    
-    // TSDB 必须指定 sortColumns，且第一个字段建议为时间字段
-    createPartitionedTable(db, schema, "bar_data", "datetime", , ["symbol", "datetime"])
-    
+    db = database(dbPath, RANGE, partitionBounds, , "TSDB")    
     print("数据库和表创建成功")
 } else {
     print("数据库 " + dbPath + " 已存在")
