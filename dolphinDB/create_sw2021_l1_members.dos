@@ -1,0 +1,37 @@
+login(`admin, `123456)
+
+dbPath = "dfs://market_data"
+
+// 若库不存在则创建；使用单分区 VALUE 库承载静态维表
+if(!existsDatabase(dbPath)) {
+    db = database(dbPath, VALUE, 1..1, , "OLAP")
+} else {
+    db = database(dbPath)
+}
+
+// 申万一级行业成分股数据集2021版
+// l1_code   : 一级行业代码
+// l1_name   : 一级行业名称
+// l2_code   : 二级行业代码
+// l2_name   : 二级行业名称
+// l3_code   : 三级行业代码
+// l3_name   : 三级行业名称
+// stock_code: 股票代码
+// ts_code   : tushare代码
+// name      : 股票名称
+// in_date   : 加入日期
+// out_date  : 退出日期（空字符串表示尚未退出）
+// is_new    : 是否是申万最新一期成分股，'Y'=当前仍属于该行业，'N'=曾经属于但已退出
+schema = table(
+    1:0,
+    `l1_code`l1_name`l2_code`l2_name`l3_code`l3_name`stock_code`ts_code`name`in_date`out_date`is_new,
+    [`SYMBOL, `STRING, `SYMBOL, `STRING, `SYMBOL, `STRING, `SYMBOL, `SYMBOL, `STRING, `STRING, `STRING, `STRING]
+)
+
+tableName = "sw2021_l1_members"
+
+if(existsTable(dbPath, tableName)) {
+    dropTable(dbPath, tableName)
+}
+db.createTable(schema, tableName)
+print("表 " + tableName + " 创建成功")
