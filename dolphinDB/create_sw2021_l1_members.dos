@@ -2,12 +2,10 @@ login(`admin, `123456)
 
 dbPath = "dfs://market_data"
 
-// 若库不存在则创建；使用单分区 VALUE 库承载静态维表
 if(!existsDatabase(dbPath)) {
-    db = database(dbPath, VALUE, 1..1, , "OLAP")
-} else {
-    db = database(dbPath)
+    throw "数据库 dfs://market_data 不存在，请先运行 create_db.dos"
 }
+db = database(dbPath)
 
 // 申万一级行业成分股数据集2021版
 // l1_code   : 一级行业代码
@@ -31,7 +29,7 @@ schema = table(
 tableName = "sw2021_l1_members"
 
 if(existsTable(dbPath, tableName)) {
-    dropTable(dbPath, tableName)
+    dropTable(db, tableName)
 }
 db.createTable(schema, tableName)
 print("表 " + tableName + " 创建成功")
