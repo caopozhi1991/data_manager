@@ -12,7 +12,7 @@ sch_daily = table(
 
 // 3. 检查表是否已存在，如果不存在则创建
 if(!existsTable("dfs://market_data", "stock_kline_daily_hfq")) {
-    db_daily.createPartitionedTable(sch_daily, "stock_kline_daily_hfq", `trade_date, {}, `trade_date)
+    db_daily.createPartitionedTable(sch_daily, "stock_kline_daily_hfq", `trade_date)
     print("表 stock_kline_daily_hfq 创建成功")
 } else {
     print("表 stock_kline_daily_hfq 已存在")
