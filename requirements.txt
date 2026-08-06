@@ -1,0 +1,11 @@
+# Core data handling
+pandas
+python-dotenv
+
+# DolphinDB integration
+dolphindb
+
+# Data providers
+tickflow
+tushare
+tqsdk
