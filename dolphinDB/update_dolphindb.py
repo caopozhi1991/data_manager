@@ -11,6 +11,7 @@ UPDATE_SCRIPTS = [
     "download_stock_daily_to_dolphindb.py",
     "update_stock_daily_hfq_to_dolphindb.py",
     "update_stock_daily_hfq_to_vnpy_dolphindb.py",
+    "update_sw2021_to_dolphindb.py",
 ]
 
 
