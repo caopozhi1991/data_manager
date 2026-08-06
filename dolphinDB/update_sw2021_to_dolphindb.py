@@ -187,12 +187,13 @@ def prepare_classify_for_ddb(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare_members_for_ddb(df: pd.DataFrame) -> pd.DataFrame:
-    """为 DolphinDB 准备成分股数据，保持日期为 ISO 格式字符串。"""
+    """为 DolphinDB 准备成分股数据，日期字段转换为 Python date。"""
     out = df.copy()
     for col in ("in_date", "out_date"):
         if col in out.columns:
-            # 保持为 YYYY-MM-DD 格式字符串，兼容 STRING 或 DATE 列
-            out[col] = pd.to_datetime(out[col], errors="coerce").dt.strftime("%Y-%m-%d")
+            parsed = pd.to_datetime(out[col], errors="coerce")
+            out[col] = parsed.dt.date
+            out.loc[parsed.isna(), col] = None
     cols = [
         "l1_code", "l1_name", "l2_code", "l2_name",
         "l3_code", "l3_name", "stock_code", "ts_code",

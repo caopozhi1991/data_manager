@@ -283,6 +283,8 @@ def resolve_date_range(args: argparse.Namespace, latest_trade_date: date | None)
         end_date = today
 
     if start_date > end_date:
+        if latest_trade_date is not None and not args.start_date and not args.end_date:
+            return start_date, end_date
         raise ValueError(f"Invalid date range: {start_date} > {end_date}")
 
     if end_date > today:
