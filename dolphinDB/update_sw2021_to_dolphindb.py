@@ -187,13 +187,13 @@ def prepare_classify_for_ddb(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare_members_for_ddb(df: pd.DataFrame) -> pd.DataFrame:
-    """为 DolphinDB 准备成分股数据，日期字段转换为 Python date。"""
+    """为 DolphinDB 准备成分股数据，日期字段统一为 YYYY-MM-DD 字符串。"""
     out = df.copy()
     for col in ("in_date", "out_date"):
         if col in out.columns:
             parsed = pd.to_datetime(out[col], errors="coerce")
-            out[col] = parsed.dt.date
-            out.loc[parsed.isna(), col] = None
+            out[col] = parsed.dt.strftime("%Y-%m-%d")
+            out.loc[parsed.isna(), col] = ""
     cols = [
         "l1_code", "l1_name", "l2_code", "l2_name",
         "l3_code", "l3_name", "stock_code", "ts_code",
@@ -269,6 +269,36 @@ def ddb_table_insert(session, table_name: str, df: pd.DataFrame) -> int:
     return len(df)
 
 
+def ddb_insert_l1_members(session, df: pd.DataFrame) -> int:
+    """写入 sw2021_l1_members，并在服务端显式转换为目标 schema 类型。"""
+    if df.empty:
+        return 0
+    session.upload({"dbPath": DB_PATH, "tableName": L1_MEMBERS_TABLE, "dfTable": df})
+    inserted = session.run(
+        """
+        t = loadTable(dbPath, tableName)
+        payload = select
+            symbol(l1_code) as l1_code,
+            string(l1_name) as l1_name,
+            symbol(l2_code) as l2_code,
+            string(l2_name) as l2_name,
+            symbol(l3_code) as l3_code,
+            string(l3_name) as l3_name,
+            symbol(stock_code) as stock_code,
+            symbol(ts_code) as ts_code,
+            string(name) as name,
+            string(in_date) as in_date,
+            string(out_date) as out_date,
+            string(is_new) as is_new
+        from dfTable
+        t.tableInsert(payload)
+        """
+    )
+    if isinstance(inserted, (int, float)):
+        return int(inserted)
+    return len(df)
+
+
 def upsert_classify(session, dry_run: bool) -> None:
     """用 CSV 中的最新数据全量替换三张分类维表。"""
     classify_map = load_classify_data()
@@ -312,15 +342,15 @@ def upsert_l1_members(
             """
             t = loadTable("dfs://market_data", "sw2021_l1_members")
             delete from t
-            where (in_date <= ed or isNull(in_date))
-              and (out_date >= sd or isNull(out_date))
+                        where ((in_date!="" and !isNull(in_date) and date(in_date) <= ed) or in_date=="" or isNull(in_date))
+                            and ((out_date!="" and !isNull(out_date) and date(out_date) >= sd) or out_date=="" or isNull(out_date))
             """
         )
     else:
         # 无日期范围时全量替换
         session.run('delete from loadTable("dfs://market_data", "sw2021_l1_members")')
 
-    inserted = ddb_table_insert(session, L1_MEMBERS_TABLE, payload)
+    inserted = ddb_insert_l1_members(session, payload)
     print(f"[dolphindb][sw2021_l1_members] inserted rows={inserted}")
 
 
