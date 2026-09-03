@@ -139,13 +139,29 @@ def main() -> None:
     if args.end_date:
         sw_args.extend(["--end-date", args.end_date])
 
-    insert_args: list[str] = ["--target", args.target]
+    stock_insert_args: list[str] = ["--target", "stock"]
     if args.start_date:
-        insert_args.extend(["--start-date", args.start_date])
+        stock_insert_args.extend(["--start-date", args.start_date])
     if args.end_date:
-        insert_args.extend(["--end-date", args.end_date])
+        stock_insert_args.extend(["--end-date", args.end_date])
     if args.dry_run:
-        insert_args.append("--dry-run")
+        stock_insert_args.append("--dry-run")
+
+    sw_classify_insert_args: list[str] = ["--target", "sw2021_classify"]
+    if args.start_date:
+        sw_classify_insert_args.extend(["--start-date", args.start_date])
+    if args.end_date:
+        sw_classify_insert_args.extend(["--end-date", args.end_date])
+    if args.dry_run:
+        sw_classify_insert_args.append("--dry-run")
+
+    sw_members_insert_args: list[str] = ["--target", "sw2021_l1_members"]
+    if args.start_date:
+        sw_members_insert_args.extend(["--start-date", args.start_date])
+    if args.end_date:
+        sw_members_insert_args.extend(["--end-date", args.end_date])
+    if args.dry_run:
+        sw_members_insert_args.append("--dry-run")
 
     hfq_args: list[str] = []
     if args.start_date:
@@ -159,17 +175,24 @@ def main() -> None:
     if args.end_date:
         vnpy_args.extend(["--end-date", args.end_date])
 
-    total_steps = 5
-    for index, (script_path, extra_args) in enumerate(
-        [
-            (stock_script, stock_args),
-            (sw_script, sw_args),
-            (insert_script, insert_args),
-            (hfq_script, hfq_args),
-            (vnpy_script, vnpy_args),
-        ],
-        start=1,
-    ):
+    steps: list[tuple[Path, list[str]]] = [
+        (stock_script, stock_args),
+        (insert_script, stock_insert_args),
+        (hfq_script, hfq_args),
+        (vnpy_script, vnpy_args),
+    ]
+
+    if args.target in {"all", "sw2021_classify", "sw2021_l1_members"}:
+        steps.extend(
+            [
+                (sw_script, sw_args),
+                (insert_script, sw_classify_insert_args),
+                (insert_script, sw_members_insert_args),
+            ]
+        )
+
+    total_steps = len(steps)
+    for index, (script_path, extra_args) in enumerate(steps, start=1):
         print(f"[{index}/{total_steps}] Running: {script_path.name}")
         run_script(script_path, extra_args, db_path, vnpy_db_path)
 
