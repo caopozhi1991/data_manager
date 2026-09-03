@@ -251,13 +251,27 @@ def insert_sqlite(
     start_date: date | None,
     end_date: date | None,
     dry_run: bool,
+    chunksize: int = 50000,
 ) -> None:
+    import sys
+
+    if str(ROOT_DIR) not in sys.path:
+        sys.path.append(str(ROOT_DIR))
+
+    from sqlite._common import (
+        clear_date_range,
+        connect_sqlite,
+        ensure_stock_daily_table,
+        insert_stock_daily_chunk,
+    )
+
     db_path = get_sqlite_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite()
 
     try:
         ensure_sqlite_tables(conn)
+        ensure_stock_daily_table(conn)
 
         if target in ("stock", "all"):
             stock_df = load_stock_daily_data(start_date=start_date, end_date=end_date)
@@ -267,33 +281,16 @@ def insert_sqlite(
                 print(f"[sqlite][stock_kline_daily] dry-run rows={len(stock_df)}")
             else:
                 if start_date is not None and end_date is not None:
-                    conn.execute(
-                        "DELETE FROM stock_kline_daily WHERE trade_date BETWEEN ? AND ?",
-                        (start_date.isoformat(), end_date.isoformat()),
-                    )
-                conn.executemany(
-                    """
-                    INSERT OR REPLACE INTO stock_kline_daily
-                    (code, name, trade_date, open, high, low, close, volume, amount, adjust_factor)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            str(row.code),
-                            str(row.name) if pd.notna(row.name) else "",
-                            row.trade_date.isoformat(),
-                            float(row.open) if pd.notna(row.open) else None,
-                            float(row.high) if pd.notna(row.high) else None,
-                            float(row.low) if pd.notna(row.low) else None,
-                            float(row.close) if pd.notna(row.close) else None,
-                            int(row.volume) if pd.notna(row.volume) else 0,
-                            float(row.amount) if pd.notna(row.amount) else None,
-                            float(row.adjust_factor) if pd.notna(row.adjust_factor) else 1.0,
-                        )
-                        for row in stock_df.itertuples(index=False)
-                    ],
-                )
-                print(f"[sqlite][stock_kline_daily] inserted rows={len(stock_df)}")
+                    deleted = clear_date_range(conn, STOCK_TABLE, start_date, end_date)
+                    print(f"[sqlite][stock_kline_daily] deleted rows in range={deleted}")
+
+                total_inserted = 0
+                for index, begin in enumerate(range(0, len(stock_df), chunksize), start=1):
+                    chunk = stock_df.iloc[begin : begin + chunksize]
+                    inserted = insert_stock_daily_chunk(conn, chunk)
+                    total_inserted += inserted
+                    print(f"[sqlite][stock_kline_daily] batch {index}: inserted={inserted}")
+                print(f"[sqlite][stock_kline_daily] inserted rows={total_inserted}")
 
         if target in ("sw2021_classify", "all"):
             classify_map = load_classify_data()
@@ -539,7 +536,11 @@ def main() -> None:
     parser.add_argument("--start-date", default="", help="Optional YYYY-MM-DD")
     parser.add_argument("--end-date", default="", help="Optional YYYY-MM-DD")
     parser.add_argument("--dry-run", action="store_true", help="Preview rows without writing")
+    parser.add_argument("--chunksize", type=int, default=50000, help="Rows per SQLite insert batch")
     args = parser.parse_args()
+
+    if args.chunksize <= 0:
+        raise ValueError("--chunksize must be positive")
 
     start_date = parse_date_arg(args.start_date)
     end_date = parse_date_arg(args.end_date)
@@ -550,7 +551,13 @@ def main() -> None:
     print(f"QUANT_DATA_ENGINE={engine}, target={args.target}, start={start_date}, end={end_date}, dry_run={args.dry_run}")
 
     if engine == "sqlite":
-        insert_sqlite(target=args.target, start_date=start_date, end_date=end_date, dry_run=args.dry_run)
+        insert_sqlite(
+            target=args.target,
+            start_date=start_date,
+            end_date=end_date,
+            dry_run=args.dry_run,
+            chunksize=args.chunksize,
+        )
     else:
         insert_dolphindb(target=args.target, start_date=start_date, end_date=end_date, dry_run=args.dry_run)
 

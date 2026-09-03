@@ -2,30 +2,18 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import date, datetime, timedelta
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
-from typing import Dict, List, Tuple
 
 import pandas as pd
 from dotenv import load_dotenv
 
-if TYPE_CHECKING:
-    from tickflow import TickFlow
-
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DAY_MS = 86_400_000
-BATCH_SIZE = int(os.getenv("STOCK_DAILY_DOWNLOAD_BATCH_SIZE", 80))
-MAX_COUNT_PER_REQ = int(os.getenv("KLINE_MAX_COUNT_PER_REQ", 5000))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-
-def parse_date_arg(raw: str) -> date:
-    return datetime.strptime(raw, "%Y-%m-%d").date()
-
-
-def date_to_ts_ms(value: date) -> int:
-    return int(datetime.combine(value, datetime.min.time()).timestamp() * 1000)
+from common.dates import date_to_ts_ms, parse_date_arg, resolve_incremental_date_range
+from common.stock_daily_fetch import fetch_stock_daily, get_all_stock_symbols
 
 
 def connect_dolphindb_session():
@@ -48,7 +36,9 @@ def ensure_dolphindb_table_exists(session, db_path: str, table_name: str) -> Non
         raise RuntimeError(f"DolphinDB table not found: {db_path}/{table_name}")
 
 
-def get_latest_trade_date(session, db_path: str, table_name: str) -> date | None:
+def get_latest_trade_date(session, db_path: str, table_name: str):
+    from datetime import date, datetime
+
     session.upload({"dbPath": db_path, "tableName": table_name})
     latest = session.run("exec max(trade_date) from loadTable(dbPath, tableName)")
     if latest is None or (isinstance(latest, float) and pd.isna(latest)):
@@ -67,148 +57,7 @@ def get_latest_trade_date(session, db_path: str, table_name: str) -> date | None
     return parse_date_arg(raw[:10])
 
 
-def get_all_stock_symbols(tf: "TickFlow") -> List[str]:
-    all_frames: List[pd.DataFrame] = []
-    for exchange in ["SH", "SZ", "BJ"]:
-        raw = tf.exchanges.get_instruments(exchange=exchange, instrument_type="stock")
-        if raw is None:
-            continue
-        df = pd.DataFrame(raw)
-        if df.empty or "symbol" not in df.columns:
-            continue
-        all_frames.append(df.loc[:, ["symbol"]].copy())
-
-    if not all_frames:
-        raise RuntimeError("No symbols returned from TickFlow exchanges.get_instruments")
-
-    merged = pd.concat(all_frames, ignore_index=True)
-    merged = merged.dropna(subset=["symbol"]).drop_duplicates(subset=["symbol"])
-    return merged["symbol"].astype(str).tolist()
-
-
-def get_ex_factors_batch(tf: "TickFlow", symbols: List[str]) -> Dict[str, pd.DataFrame]:
-    try:
-        factors_raw = tf.klines.ex_factors(symbols, as_dataframe=True)
-    except Exception:
-        return {}
-
-    factors_df = pd.DataFrame(factors_raw)
-    if factors_df.empty:
-        return {}
-
-    if "symbol" not in factors_df.columns and "code" in factors_df.columns:
-        factors_df = factors_df.rename(columns={"code": "symbol"})
-
-    required_cols = {"symbol", "trade_date", "ex_factor"}
-    if not required_cols.issubset(set(factors_df.columns)):
-        return {}
-
-    factors_df = factors_df.loc[:, ["symbol", "trade_date", "ex_factor"]].copy()
-    factors_df["trade_date"] = pd.to_datetime(factors_df["trade_date"]).dt.date
-    factors_df["ex_factor"] = pd.to_numeric(factors_df["ex_factor"], errors="coerce")
-    factors_df = factors_df.dropna(subset=["symbol", "trade_date", "ex_factor"])
-
-    factor_map: Dict[str, pd.DataFrame] = {}
-    for symbol, group in factors_df.groupby("symbol"):
-        factor_map[str(symbol)] = group.drop_duplicates(subset=["trade_date"], keep="last")
-    return factor_map
-
-
-def fetch_stock_daily(tf: "TickFlow", symbols: List[str], start_ts: int, end_ts: int) -> pd.DataFrame:
-    if start_ts > end_ts:
-        return pd.DataFrame()
-
-    max_days_per_req = max(1, MAX_COUNT_PER_REQ)
-    chunk_ranges: List[Tuple[int, int]] = []
-    cursor = start_ts
-    while cursor <= end_ts:
-        chunk_end = min(end_ts, cursor + max_days_per_req * DAY_MS - 1)
-        chunk_ranges.append((cursor, chunk_end))
-        cursor = chunk_end + 1
-
-    symbol_chunks = [symbols[i : i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
-    ex_factor_map = get_ex_factors_batch(tf, symbols)
-
-    all_rows: List[pd.DataFrame] = []
-    for chunk_start, chunk_end in chunk_ranges:
-        span_days = max(1, int((chunk_end - chunk_start) / DAY_MS) + 1)
-        for symbol_chunk in symbol_chunks:
-            result = tf.klines.batch(
-                symbols=symbol_chunk,
-                period="1d",
-                start_time=chunk_start,
-                end_time=chunk_end,
-                count=min(span_days, MAX_COUNT_PER_REQ),
-                adjust="none",
-                as_dataframe=True,
-                show_progress=False,
-                batch_size=min(100, max(1, len(symbol_chunk))),
-                max_workers=5,
-            )
-
-            for symbol in symbol_chunk:
-                symbol_df = result.get(symbol)
-                if symbol_df is None:
-                    continue
-                df = pd.DataFrame(symbol_df)
-                if df.empty or "trade_date" not in df.columns:
-                    continue
-
-                df = df.rename(columns={"symbol": "code"})
-                df["trade_date"] = pd.to_datetime(df["trade_date"])
-                df["name"] = ""
-
-                factor_df = ex_factor_map.get(str(symbol))
-                if factor_df is not None and not factor_df.empty:
-                    tmp = factor_df.copy()
-                    tmp["trade_date"] = pd.to_datetime(tmp["trade_date"])
-                    tmp = tmp.rename(columns={"ex_factor": "adjust_factor"})
-                    df = pd.merge_asof(
-                        df.sort_values("trade_date"),
-                        tmp.sort_values("trade_date"),
-                        on="trade_date",
-                        direction="backward",
-                    )
-                    df["adjust_factor"] = df["adjust_factor"].fillna(1.0)
-                else:
-                    df["adjust_factor"] = 1.0
-
-                df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
-                df = df.sort_values("trade_date").drop_duplicates(subset=["trade_date"], keep="last")
-
-                for col in ["open", "high", "low", "close", "amount", "adjust_factor"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-                if "volume" in df.columns:
-                    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int32")
-
-                keep_cols = [
-                    "code",
-                    "name",
-                    "trade_date",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "amount",
-                    "adjust_factor",
-                ]
-                keep_cols = [col for col in keep_cols if col in df.columns]
-                if keep_cols:
-                    all_rows.append(df.loc[:, keep_cols].copy())
-
-    if not all_rows:
-        return pd.DataFrame()
-
-    merged = pd.concat(all_rows, ignore_index=True)
-    merged = merged.drop_duplicates(subset=["code", "trade_date"], keep="last")
-    merged = merged.sort_values(["trade_date", "code"]).reset_index(drop=True)
-    return merged
-
-
-def clear_target_date_range(session, db_path: str, table_name: str, start_date: date, end_date: date) -> int:
+def clear_target_date_range(session, db_path: str, table_name: str, start_date, end_date) -> int:
     session.upload(
         {
             "dbPath": db_path,
@@ -267,32 +116,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_date_range(args: argparse.Namespace, latest_trade_date: date | None) -> Tuple[date, date]:
-    today = date.today()
-
-    if args.start_date and args.end_date:
-        start_date = parse_date_arg(args.start_date)
-        end_date = parse_date_arg(args.end_date)
-    elif args.start_date or args.end_date:
-        raise ValueError("Please provide both --start-date and --end-date, or provide neither")
-    else:
-        if latest_trade_date is None:
-            start_date = parse_date_arg(args.init_start_date)
-        else:
-            start_date = latest_trade_date + timedelta(days=1)
-        end_date = today
-
-    if start_date > end_date:
-        if latest_trade_date is not None and not args.start_date and not args.end_date:
-            return start_date, end_date
-        raise ValueError(f"Invalid date range: {start_date} > {end_date}")
-
-    if end_date > today:
-        end_date = today
-
-    return start_date, end_date
-
-
 def main() -> None:
     load_dotenv(ROOT_DIR / ".env")
     args = parse_args()
@@ -315,7 +138,12 @@ def main() -> None:
     try:
         ensure_dolphindb_table_exists(session, args.db_path, args.table)
         latest_trade_date = get_latest_trade_date(session, args.db_path, args.table)
-        start_date, end_date = resolve_date_range(args, latest_trade_date)
+        start_date, end_date = resolve_incremental_date_range(
+            start_date_raw=args.start_date,
+            end_date_raw=args.end_date,
+            latest_trade_date=latest_trade_date,
+            init_start_date=args.init_start_date,
+        )
 
         if latest_trade_date is not None:
             print(f"Current latest trade_date in {args.db_path}/{args.table}: {latest_trade_date}")

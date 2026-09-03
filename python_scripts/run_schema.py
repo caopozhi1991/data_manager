@@ -16,6 +16,7 @@ SQLITE_DIR = ROOT_DIR / "sqlite"
 SUPPORTED_SCRIPTS = (
     "create_db",
     "create_stock_daily",
+    "create_stock_daily_hfq",
     "create_sw2021_classify_tables",
     "create_sw2021_l1_members",
 )

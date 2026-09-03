@@ -5,13 +5,17 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from common.dates import coerce_to_date, resolve_hfq_update_range
+
 DEFAULT_CONDA_ENV = os.getenv("DEFAULT_RUN_CONDA_ENV", "agent")
 REEXEC_COUNT_ENV = "_AUTO_CONDA_REEXEC_COUNT"
 
@@ -54,10 +58,6 @@ def ensure_default_conda_env(expected_env: str) -> None:
     raise SystemExit(result.returncode)
 
 
-def parse_date_arg(raw: str) -> date:
-    return datetime.strptime(raw, "%Y-%m-%d").date()
-
-
 def connect_dolphindb_session():
     import dolphindb as ddb
 
@@ -81,69 +81,13 @@ def ensure_table_exists(session, db_path: str, table_name: str) -> None:
 def get_table_max_date(session, db_path: str, table_name: str) -> date | None:
     session.upload({"dbPath": db_path, "tableName": table_name})
     value = session.run("exec max(trade_date) from loadTable(dbPath, tableName)")
-    if value is None:
-        return None
-
-    text = str(value)
-    if not text or text.lower() == "nan":
-        return None
-    return parse_date_arg(text[:10])
+    return coerce_to_date(value)
 
 
 def get_table_min_date(session, db_path: str, table_name: str) -> date | None:
     session.upload({"dbPath": db_path, "tableName": table_name})
     value = session.run("exec min(trade_date) from loadTable(dbPath, tableName)")
-    if value is None:
-        return None
-
-    text = str(value)
-    if not text or text.lower() == "nan":
-        return None
-    return parse_date_arg(text[:10])
-
-
-def resolve_update_range(
-    start_date_raw: str | None,
-    end_date_raw: str | None,
-    src_min_date: date | None,
-    src_max_date: date | None,
-    dst_max_date: date | None,
-    lookback_days: int = 30,
-) -> tuple[date, date]:
-    """
-    后复权因子是累积值，某日发生除权后该日及之后因子变大，历史不变。
-    但数据源偶尔会回溯修正历史 adjust_factor，导致已写入的 HFQ 数据过期。
-    因此默认增量模式下往前多覆盖 lookback_days 天，确保近期因子变动能被捕获。
-    如果需要全量重算请显式传入 --start-date 为源表最早日期。
-    """
-    if src_min_date is None or src_max_date is None:
-        raise RuntimeError("Source table has no data")
-
-    today = date.today()
-
-    if start_date_raw and end_date_raw:
-        start_date = parse_date_arg(start_date_raw)
-        end_date = parse_date_arg(end_date_raw)
-    elif start_date_raw or end_date_raw:
-        raise ValueError("Please provide both --start-date and --end-date, or provide neither")
-    else:
-        if dst_max_date is None:
-            # HFQ 表为空，从源表最早日期全量重算
-            start_date = src_min_date
-        else:
-            from datetime import timedelta
-            # 往前回溯 lookback_days，捕获数据源可能的历史因子修正
-            start_date = max(src_min_date, dst_max_date - timedelta(days=lookback_days))
-        end_date = today
-
-    if end_date > today:
-        end_date = today
-    if end_date > src_max_date:
-        end_date = src_max_date
-    if start_date < src_min_date:
-        start_date = src_min_date
-
-    return start_date, end_date
+    return coerce_to_date(value)
 
 
 def rebuild_hfq_range(
@@ -256,7 +200,7 @@ def main() -> None:
         src_max_date = get_table_max_date(session, args.src_db_path, args.src_table)
         dst_max_date = get_table_max_date(session, args.dst_db_path, args.dst_table)
 
-        start_date, end_date = resolve_update_range(
+        start_date, end_date = resolve_hfq_update_range(
             start_date_raw=args.start_date,
             end_date_raw=args.end_date,
             src_min_date=src_min_date,
