@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import date, datetime
+import sqlite3
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -12,7 +13,7 @@ from tickflow import TickFlow
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT_DIR / "data"
+DEFAULT_DB_PATH = ROOT_DIR / "sqlite" / "market_data.db"
 TABLE_NAME = "stock_kline_daily"
 DAY_MS = 86_400_000
 
@@ -24,12 +25,48 @@ def parse_date_arg(raw: str) -> date:
     return datetime.strptime(raw, "%Y-%m-%d").date()
 
 
-def format_date_arg(value: date) -> str:
-    return value.isoformat()
-
-
 def date_to_ts_ms(d: date) -> int:
     return int(datetime.combine(d, datetime.min.time()).timestamp() * 1000)
+
+
+def open_connection(db_path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(db_path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def ensure_stock_table_exists(connection: sqlite3.Connection, table_name: str) -> None:
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            code TEXT NOT NULL,
+            name TEXT,
+            trade_date TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume INTEGER,
+            amount REAL,
+            adjust_factor REAL,
+            PRIMARY KEY (code, trade_date)
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_{table_name}_trade_date
+        ON {table_name} (trade_date)
+        """
+    )
+
+
+def get_latest_trade_date(connection: sqlite3.Connection, table_name: str) -> date | None:
+    row = connection.execute(f"SELECT MAX(trade_date) FROM {table_name}").fetchone()
+    value = row[0] if row is not None else None
+    if value in (None, "", "nan"):
+        return None
+    return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
 
 
 def get_all_stock_symbols(tf: TickFlow) -> List[str]:
@@ -49,35 +86,6 @@ def get_all_stock_symbols(tf: TickFlow) -> List[str]:
     merged = pd.concat(all_frames, ignore_index=True)
     merged = merged.dropna(subset=["symbol"]).drop_duplicates(subset=["symbol"])
     return merged["symbol"].astype(str).tolist()
-
-
-def get_latest_local_trade_date() -> date | None:
-    table_root = DATA_DIR / TABLE_NAME
-    if not table_root.exists():
-        return None
-
-    files = sorted(table_root.glob("trade_month=*/data.csv"))
-    if not files:
-        return None
-
-    latest: date | None = None
-    for file_path in files:
-        try:
-            df = pd.read_csv(file_path, usecols=["trade_date"])
-        except Exception:
-            continue
-
-        if df.empty or "trade_date" not in df.columns:
-            continue
-
-        parsed = pd.to_datetime(df["trade_date"], errors="coerce").dt.date
-        file_latest = parsed.dropna().max()
-        if pd.isna(file_latest):
-            continue
-        if latest is None or file_latest > latest:
-            latest = file_latest
-
-    return latest
 
 
 def get_ex_factors_batch(tf: TickFlow, symbols: List[str]) -> Dict[str, pd.DataFrame]:
@@ -209,62 +217,65 @@ def fetch_stock_daily(
     return merged
 
 
-def save_partitioned_by_month(df: pd.DataFrame) -> int:
-    if df.empty:
+def clear_target_date_range(connection: sqlite3.Connection, table_name: str, start_date: date, end_date: date) -> int:
+    cursor = connection.execute(
+        f"DELETE FROM {table_name} WHERE trade_date >= ? AND trade_date <= ?",
+        (start_date.isoformat(), end_date.isoformat()),
+    )
+    return cursor.rowcount if cursor.rowcount is not None and cursor.rowcount >= 0 else 0
+
+
+def insert_chunk_to_sqlite(connection: sqlite3.Connection, table_name: str, chunk: pd.DataFrame) -> int:
+    if chunk.empty:
         return 0
 
-    table_root = DATA_DIR / TABLE_NAME
-    table_root.mkdir(parents=True, exist_ok=True)
+    values = []
+    for row in chunk.itertuples(index=False):
+        values.append(
+            (
+                str(row.code),
+                str(row.name) if pd.notna(row.name) else "",
+                row.trade_date.isoformat() if hasattr(row.trade_date, "isoformat") else str(row.trade_date)[:10],
+                float(row.open) if pd.notna(row.open) else None,
+                float(row.high) if pd.notna(row.high) else None,
+                float(row.low) if pd.notna(row.low) else None,
+                float(row.close) if pd.notna(row.close) else None,
+                int(row.volume) if pd.notna(row.volume) else 0,
+                float(row.amount) if pd.notna(row.amount) else None,
+                float(row.adjust_factor) if pd.notna(row.adjust_factor) else 1.0,
+            )
+        )
 
-    df = df.copy()
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
-    df["trade_month"] = df["trade_date"].dt.strftime("%Y-%m")
-
-    file_count = 0
-    for month, group in df.groupby("trade_month"):
-        out_dir = table_root / f"trade_month={month}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_file = out_dir / "data.csv"
-        new_group = group.drop(columns=["trade_month"]).copy()
-        new_group["trade_date"] = pd.to_datetime(new_group["trade_date"]).dt.strftime("%Y-%m-%d")
-
-        if out_file.exists():
-            try:
-                existing = pd.read_csv(out_file)
-            except Exception:
-                existing = pd.DataFrame()
-            if not existing.empty:
-                if "trade_date" in existing.columns:
-                    existing["trade_date"] = pd.to_datetime(existing["trade_date"], errors="coerce").dt.strftime("%Y-%m-%d")
-                merged = pd.concat([existing, new_group], ignore_index=True)
-                merged = merged.drop_duplicates(subset=["code", "trade_date"], keep="last")
-            else:
-                merged = new_group
-        else:
-            merged = new_group
-
-        merged = merged.sort_values(["trade_date", "code"]).reset_index(drop=True)
-        merged.to_csv(out_file, index=False, encoding="utf-8")
-        file_count += 1
-
-    return file_count
+    connection.executemany(
+        f"""
+        INSERT OR REPLACE INTO {table_name}
+        (code, name, trade_date, open, high, low, close, volume, amount, adjust_factor)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values,
+    )
+    return len(values)
 
 
-def resolve_date_range(start_date_raw: str | None, end_date_raw: str | None, init_start_date_raw: str) -> tuple[date, date]:
+def resolve_date_range(args: argparse.Namespace, latest_trade_date: date | None) -> tuple[date, date]:
     today = date.today()
 
-    if start_date_raw and end_date_raw:
-        start_date = parse_date_arg(start_date_raw)
-        end_date = parse_date_arg(end_date_raw)
-    elif start_date_raw or end_date_raw:
+    if args.start_date and args.end_date:
+        start_date = parse_date_arg(args.start_date)
+        end_date = parse_date_arg(args.end_date)
+    elif args.start_date or args.end_date:
         raise ValueError("Please provide both --start-date and --end-date, or provide neither")
     else:
-        latest_local = get_latest_local_trade_date()
-        if latest_local is None:
-            start_date = parse_date_arg(init_start_date_raw)
+        if latest_trade_date is None:
+            start_date = parse_date_arg(args.init_start_date)
         else:
-            start_date = latest_local + timedelta(days=1)
+            start_date = latest_trade_date + timedelta(days=1)
         end_date = today
+
+    if start_date > end_date:
+        if latest_trade_date is not None and not args.start_date and not args.end_date:
+            return start_date, end_date
+        raise ValueError(f"Invalid date range: {start_date} > {end_date}")
 
     if end_date > today:
         end_date = today
@@ -272,52 +283,96 @@ def resolve_date_range(start_date_raw: str | None, end_date_raw: str | None, ini
     return start_date, end_date
 
 
-def main() -> None:
-    load_dotenv(ROOT_DIR / ".env")
-
-    parser = argparse.ArgumentParser(description="Download stock daily data into data/stock_kline_daily")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Download stock daily data into SQLite stock_kline_daily")
+    parser.add_argument(
+        "--db-path",
+        default=os.getenv("SQLITE_DB_PATH", str(DEFAULT_DB_PATH)),
+        help="SQLite database path for the main market_data database",
+    )
+    parser.add_argument("--table", default=TABLE_NAME, help="SQLite table name")
     parser.add_argument("--start-date", default="", help="Optional YYYY-MM-DD. Omit to auto-increment from local data.")
     parser.add_argument("--end-date", default="", help="Optional YYYY-MM-DD. Omit to auto-increment to today.")
     parser.add_argument(
         "--init-start-date",
         default="2005-01-01",
-        help="Used when local data does not exist and start/end are omitted.",
+        help="Used when the table has no data yet and start/end are omitted",
     )
     parser.add_argument(
         "--symbols",
         default="",
         help="Comma-separated symbols, e.g. 600000.SH,000001.SZ. Empty means full market.",
     )
-    args = parser.parse_args()
+    parser.add_argument("--chunksize", type=int, default=50000, help="Rows per insert batch")
+    return parser.parse_args()
 
-    start_date, end_date = resolve_date_range(args.start_date, args.end_date, args.init_start_date)
-    if start_date > end_date:
-        raise ValueError(f"Invalid date range: {start_date} > {end_date}")
+
+def main() -> None:
+    load_dotenv(ROOT_DIR / ".env")
+    args = parse_args()
+
+    if args.chunksize <= 0:
+        raise ValueError("--chunksize must be positive")
 
     api_key = os.getenv("TICKFLOW_APIKEY")
     if not api_key:
         raise RuntimeError("TICKFLOW_APIKEY is missing in .env")
 
-    tf = TickFlow(api_key=api_key)
+    db_path = Path(args.db_path)
+    connection = open_connection(db_path)
 
-    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-    if not symbols:
-        symbols = get_all_stock_symbols(tf)
+    try:
+        ensure_stock_table_exists(connection, args.table)
+        latest_trade_date = get_latest_trade_date(connection, args.table)
+        start_date, end_date = resolve_date_range(args, latest_trade_date)
 
-    print(f"Downloading stock daily for {len(symbols)} symbols: {start_date} -> {end_date}")
-    start_ts = date_to_ts_ms(start_date)
-    end_ts = date_to_ts_ms(end_date)
+        if latest_trade_date is not None:
+            print(f"Current latest trade_date in {db_path}/{args.table}: {latest_trade_date}")
+        else:
+            print(f"Table {db_path}/{args.table} has no data yet")
 
-    df = fetch_stock_daily(tf=tf, symbols=symbols, start_ts=start_ts, end_ts=end_ts)
-    if df.empty:
-        print("No data fetched")
-        return
+        print(f"Downloading range: {start_date} -> {end_date}")
 
-    file_count = save_partitioned_by_month(df)
-    print(
-        f"Saved {len(df)} rows into {file_count} monthly files under {DATA_DIR / TABLE_NAME} "
-        f"for range {format_date_arg(start_date)} -> {format_date_arg(end_date)}"
-    )
+        if start_date > end_date:
+            print("No date to update")
+            return
+
+        tf = TickFlow(api_key=api_key)
+        symbols = [symbol.strip() for symbol in args.symbols.split(",") if symbol.strip()]
+        if not symbols:
+            symbols = get_all_stock_symbols(tf)
+
+        print(f"Symbols count: {len(symbols)}")
+
+        start_ts = date_to_ts_ms(start_date)
+        end_ts = date_to_ts_ms(end_date)
+        df = fetch_stock_daily(tf=tf, symbols=symbols, start_ts=start_ts, end_ts=end_ts)
+
+        if df.empty:
+            print("No data fetched")
+            return
+
+        deleted = clear_target_date_range(connection, args.table, start_date, end_date)
+        print(f"Deleted existing rows in range: {deleted}")
+
+        total_inserted = 0
+        for index, begin in enumerate(range(0, len(df), args.chunksize), start=1):
+            chunk = df.iloc[begin : begin + args.chunksize].copy()
+            inserted = insert_chunk_to_sqlite(connection, args.table, chunk)
+            total_inserted += inserted
+            print(f"Batch {index}: inserted={inserted}, total={total_inserted}")
+
+        connection.commit()
+        print(
+            "Done. "
+            f"db={db_path}, table={args.table}, range={start_date}->{end_date}, "
+            f"downloaded={len(df)}, inserted={total_inserted}"
+        )
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
